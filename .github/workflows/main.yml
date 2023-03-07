@@ -1,0 +1,246 @@
+name: build-and-deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+    - '**.md'
+    - 'assets/**'
+    - '**.png'
+    - 'lambda.py'
+
+jobs:
+  packer-build:
+    name: Packer Build
+
+    runs-on: ubuntu-latest
+    env: 
+      AWS_DEFAULT_REGION: ap-south-1
+
+    permissions:
+      id-token: write
+      contents: write
+
+    outputs:
+      ami_id: ${{ steps.build.outputs.AMI_ID }}
+
+    steps:
+      - name: 🧳 Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+
+      - name: 🔑 configureawscredentials
+        uses: aws-actions/configure-aws-credentials@v1.7.0
+        with:
+          role-to-assume: ${{ secrets.GIT_ACTION_ROLE }}
+          role-session-name: git-action
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+
+      - name: 📡 Get GitHub Action Public IP
+        id: ip
+        uses: haythem/public-ip@v1.3
+
+      # This step is not mandantory as if infra is behind VPN this step can be useful to whitelist github action IP, We can skip this if not using VPN
+      - name: 🧲 Add Public IP to Security group
+        run: |
+          aws ec2 authorize-security-group-ingress --group-id ${{ secrets.SG_ID }} --protocol tcp --port 22 --cidr ${{ steps.ip.outputs.ipv4 }}/32    
+
+
+      - name: 🪜 Init 
+        run: |
+          packer init .
+          packer fmt .
+          packer validate .
+
+
+      - name: 🛠️ Build
+        id: build
+        run: | 
+          packer build -color=false -on-error=cleanup -timestamp-ui builder.pkr.hcl
+          ami_id=$(cat manifest.json | jq -r '.builds[-1].artifact_id' | cut -d ":" -f2 | tr -d '"')
+          echo "AMI_ID=${ami_id}" >> $GITHUB_OUTPUT
+
+
+
+      - name: 🚚 Remove Github Actions IP from security group
+        run: |
+          aws ec2 revoke-security-group-ingress --group-id ${{ secrets.SG_ID }} --protocol tcp --port 22 --cidr ${{ steps.ip.outputs.ipv4 }}/32
+        if: always()
+
+
+
+  scan:
+    name: EC2 Creation and Inspector Scan
+    runs-on: ubuntu-latest
+    needs: packer-build
+    env: 
+      AWS_DEFAULT_REGION: ap-south-1
+
+    permissions:
+      id-token: write
+      contents: write
+
+    outputs:
+      shared_ami: ${{ steps.share_ami.outputs.shared_ami }}
+
+    steps:
+      - name: 🔑 configureawscredentials
+        uses: aws-actions/configure-aws-credentials@v1.7.0
+        with:
+          role-to-assume: ${{ secrets.GIT_ACTION_ROLE }}
+          role-session-name: git-action
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+
+      - name: 🚀 Launch EC2 using new AMI
+        id: ec2
+        run: |
+          # test
+          AMI_ID=${{ needs.packer-build.outputs.ami_id }}
+          echo  "${AMI_ID}"
+
+          # to be used as unique tag on the ec2 for inspector scan
+          TIME_TAG=$(date +%s)
+          echo "${TIME_TAG}"
+
+          # array of tags for ec2
+          tags=( --tag-specifications 'ResourceType=instance,Tags=[{Key=builder,Value=packer},{Key=creator,Value=gh-action},{Key=timestamp,Value='"${TIME_TAG}"'}]' )
+          
+          aws ec2 run-instances --image-id ${AMI_ID} --count 1 --instance-type t3a.medium \
+            --key-name new --security-group-ids ${{ secrets.SG_ID }} "${tags[@]}"  2>&1 | tee ec2.json
+
+          # to be used to terminate the instace in later step
+          INSTANCE_ID=$(jq -c '.Instances | .[0] | .InstanceId' ec2.json | tr -d '"')
+
+          echo "INSTANCE_ID=${INSTANCE_ID}" >> $GITHUB_OUTPUT
+          echo "TIME_TAG=${TIME_TAG}" >> $GITHUB_OUTPUT
+          echo "AMI_ID=${AMI_ID}" >> $GITHUB_OUTPUT
+
+          # wait for ec2 to be in running state before proceeding for inspector scan
+          aws ec2 wait instance-running  --instance-ids ${INSTANCE_ID}
+
+
+      - name: 🥱 Sleep for 5 mins to let the EC2 breathe
+        run: sleep 300
+        if: ${{ success() }}
+
+
+      - name: 🏘️ Create Inspector Resource Group
+        id: resource_arn
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.INSTANCE_ID }}
+          TIME_TAG: ${{ steps.ec2.outputs.TIME_TAG }}
+        run: |
+          echo "RESOURCE_ARN=$(aws inspector create-resource-group \
+                                  --resource-group-tags key=timestamp,value=${{ env.TIME_TAG }} \
+                                  --query "resourceGroupArn" )" >> $GITHUB_OUTPUT
+        if: ${{ success() }}
+
+
+      - name: 🎯 Create Assessment Target
+        id: target_arn
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.INSTANCE_ID }}
+          TIME_TAG: ${{ steps.ec2.outputs.TIME_TAG }}
+        run: |
+          echo "TARGET_ARN=$(aws inspector create-assessment-target \
+                              --assessment-target-name ${{ env.INSTANCE_ID }} \
+                              --resource-group-arn ${{ steps.resource_arn.outputs.RESOURCE_ARN }} \
+                              --query "assessmentTargetArn")" >> $GITHUB_OUTPUT
+        if: ${{ success() }}
+
+
+      - name: 📒 Create Assessment Template
+        id: template_arn
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.INSTANCE_ID }}
+          TIME_TAG: ${{ steps.ec2.outputs.TIME_TAG }}
+        run: |
+          echo "TEMPLATE_ARN=$(aws inspector create-assessment-template --assessment-target-arn ${{ steps.target_arn.outputs.TARGET_ARN }} \
+                                --assessment-template-name ${{ env.INSTANCE_ID }} \
+                                --duration-in-seconds 180 \
+                                --rules-package-arns  <Put ARN of rules>
+                                #Put Put ARN for inpsector rules, list it by awscli
+                                --user-attributes-for-findings key=gitaction,value=run \
+                                --query "assessmentTemplateArn" \
+                                )" >> $GITHUB_OUTPUT
+        if: ${{ success() }}
+
+
+      - name: 📝 Create Assessment Run
+        id: run_arn
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.INSTANCE_ID }}
+          TIME_TAG: ${{ steps.ec2.outputs.TIME_TAG }}
+        run: |
+          echo "RUN_ARN=$(aws inspector start-assessment-run \
+                            --assessment-run-name ${{ env.INSTANCE_ID }} \
+                            --assessment-template-arn ${{ steps.template_arn.outputs.TEMPLATE_ARN }} \
+                            --query "assessmentRunArn")" >> $GITHUB_OUTPUT
+        if: ${{ success() }}
+
+
+      - name: 💤 Sleep for 6 mins to get the inspector report
+        run: sleep 360
+        if: ${{ success() }}
+
+
+      - name: 〽️ Inspector Finding Count
+        id: high_finding
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.INSTANCE_ID }}
+          TIME_TAG: ${{ steps.ec2.outputs.TIME_TAG }}
+        run: |
+          aws inspector describe-assessment-runs \
+            --assessment-run-arns ${{ steps.run_arn.outputs.RUN_ARN }}  \
+            --query "assessmentRuns[0].findingCounts"
+
+          echo "HIGH_FINDING=$(aws inspector describe-assessment-runs \
+                                --assessment-run-arns ${{ steps.run_arn.outputs.RUN_ARN }}  \
+                                --query "assessmentRuns[0].findingCounts.High")" >> $GITHUB_OUTPUT
+
+
+      - name: 🤨 Inspector High Findings > threshold ? Clean AMI ':' Skip
+        env:
+          AMI_ID: ${{ steps.ec2.outputs.AMI_ID }}
+        run: |
+          echo "There are total ${{ steps.high_finding.outputs.HIGH_FINDING }} HIGH inspector findings"
+          SNAPID=$(aws ec2 describe-images --region ap-south-1 --image-ids ${{ env.AMI_ID }} --query "Images[0].BlockDeviceMappings[0].Ebs.SnapshotId" | tr -d '"')
+          aws ec2 deregister-image --image-id ${{ env.AMI_ID }}
+          aws ec2 delete-snapshot --snapshot-id $SNAPID
+        if:  ${{ steps.high_finding.outputs.HIGH_FINDING > 25 }}
+
+
+      - name: 🏛️ Share AMI with your AWS account
+        id: share_ami
+        env:
+          AMI_ID: ${{ steps.ec2.outputs.AMI_ID }}
+        run: |
+          # set var if image shared successfully
+          shared_ami="false"
+
+          aws ec2 modify-image-attribute \
+            --image-id  ${{ env.AMI_ID }} \
+            --launch-permission "Add=[{UserId=${{ secrets.AWS_ID }}}]"
+
+          if [[ $?==0 ]]; then shared_ami="true"; fi
+
+          # set output
+          echo "shared_ami=${shared_ami}" >> $GITHUB_OUTPUT
+
+        if: ${{ steps.high_finding.outputs.HIGH_FINDING < 25 }}
+
+
+      - name: 🕸️ Terminate EC2 instance
+        id: ec2-terminate
+        env:
+          INSTANCE_ID: ${{ steps.ec2.outputs.INSTANCE_ID }}
+        run: |
+          aws ec2 terminate-instances --instance-ids ${{ env.INSTANCE_ID }}
+          echo ${{ steps.high_finding.outputs.HIGH_FINDING }}
+        if: always()
+
+
