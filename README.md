@@ -1,5 +1,5 @@
 # CIS hardened Image
-[[build-and-deploy](https://github.com/Puneet8800/CIS-Golden-AMI/blob/main/.github/workflows/build_and_deploy.yml)]
+[[build-and-deploy](https://github.com/Puneet8800/CIS-Hardened-AMI/blob/main/.github/workflows/build_and_deploy.yml)]
 
 
 **CIS (Level 1 + Level 2) Hardened Images for Cloud.**
