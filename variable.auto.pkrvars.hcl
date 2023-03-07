@@ -1,0 +1,7 @@
+ami_prefix        = "aws-eks-ami-test"
+region            = "ap-south-1"
+instance_type     = "t3a.medium"
+ami_filter_name   = "amazon-eks-*"
+source_ami_owners = "602401143452"
+security_group_id = "< Security Group ID >"
+source_ami_id     = "ami-09a3ebc18faf67c69"

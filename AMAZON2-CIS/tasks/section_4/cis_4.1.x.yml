@@ -1,0 +1,254 @@
+---
+
+- name: 4.1.6 Ensure events that modify the system's network environment are collected(Scored)
+  shell: "grep system-locale {{ cis_audit_rules_filename }}"
+  register: system-locale
+  changed_when: False
+  ignore_errors: true
+  tags:
+    - "4.1.6"
+    - level-2
+    - section-4
+    - scored
+
+- name: 4.1.6 Ensure events that modify the system's network environment are collected(Scored)(Verify registered output matches)
+  lineinfile:
+    dest: "{{ cis_audit_rules_filename }}"
+    line: "{{ item }}"
+  with_items:
+    - "# 4.1.6 Ensure events that modify date and time information are collected"
+    - "-a always,exit -F arch=b64 -S sethostname -S setdomainname -k system-locale"
+    - "-a always,exit -F arch=b32 -S sethostname -S setdomainname -k system-locale"
+    - "-w /etc/issue -p wa -k system-locale"
+    - "-w /etc/issue.net -p wa -k system-locale"
+    - "-w /etc/hosts -p wa -k system-locale"
+    - "-w /etc/sysconfig/network -p wa -k system-locale"
+    - "-w /etc/sysconfig/network-scripts/ -p wa -k system-locale"
+  when:
+    ("'-a always,exit -F arch=b64 -S sethostname -S setdomainname -k system-locale' not in system-locale.stdout") or
+    ("'-a always,exit -F arch=b32 -S sethostname -S setdomainname -k system-locale' not in system-locale.stdout") or
+    ("'-w /etc/issue -p wa -k system-locale' not in system-locale.stdout") or
+    ("'-w /etc/issue.net -p wa -k system-locale' not in system-locale.stdout") or
+    ("'-w /etc/hosts -p wa -k system-locale' not in system-locale.stdout") or
+    ("'-w /etc/sysconfig/network -p wa -k system-locale' not in system-locale.stdout") or
+    ("'-w /etc/sysconfig/network-scripts/ -p wa -k system-locale' not in system-locale.stdout")
+  notify: Generate auditd rules
+  tags:
+    - "4.1.6"
+    - level-2
+    - section-4
+    - scored
+
+# 4.1.16 Ensure system administrator actions (sudolog) are collected (Scored)
+
+- name: 4.1.16 Ensure system administrator actions (sudolog) are collected (Scored)
+  shell: "grep scope {{ cis_audit_rules_filename }}"
+  register: scope
+  changed_when: False
+  ignore_errors: true
+  tags:
+    - "4.1.16"
+    - level-2
+    - section-4
+    - scored
+
+- name: 4.1.16 Ensure system administrator actions (sudolog) are collected(Verify registered output matches)
+  lineinfile:
+    dest: "{{ cis_audit_rules_filename }}"
+    line: "{{ item }}"
+  with_items:
+    - "# 4.1.16 Ensure system administrator actions (sudolog) are collected"
+    - "-w /var/log/sudo.log -p wa -k actions"
+  when: ("'-w /var/log/sudo.log -p wa -k actions' not in scope.stdout")
+  notify: Generate auditd rules
+  tags:
+    - "4.1.16"
+    - level-2
+    - section-4
+    - scored
+
+- name: "4.1.6 | PATCH | Ensure events that modify the system's Mandatory Access Controls are collected"
+  debug:
+    msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+  changed_when: true
+  notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_6
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.6
+    - auditd
+
+- name: "4.1.7 | PATCH | Ensure login and logout events are collected"
+  block:
+    - name: "4.1.7 | AUDIT | Ensure login and logout events are collected | Check for pam_fallock or pam_tally2"
+      shell: grep pam_tally2.so /etc/pam.d/system-auth /etc/pam.d/password-auth
+      changed_when: false
+      failed_when: false
+      register: amazon2cis_4_1_7_tally2_check
+      tags:
+        - skip_ansible_lint
+
+    - name: "4.1.7 | PATCH | Ensure login and logout events are collected | Set login and logout events"
+      debug:
+        msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+      changed_when: true
+      notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_7
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.7
+    - auditd
+
+- name: "4.1.8 | PATCH | Ensure session initiation information is collected"
+  debug:
+    msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+  changed_when: true
+  notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_8
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.8
+    - auditd
+
+- name: "4.1.9 | PATCH | Ensure discretionary access control permission modification events are collected"
+  debug:
+    msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+  changed_when: true
+  notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_9
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.9
+    - auditd
+
+- name: "4.1.10 | PATCH | Ensure unsuccessful unauthorized file access attempts are collected"
+  debug:
+    msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+  changed_when: true
+  notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_10
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.10
+    - auditd
+
+- name: "4.1.11 | PATCH | Ensure use of privileged commands is collected"
+  block:
+    - name: "4.1.11 | AUDIT | Ensure use of privileged commands is collected"
+      shell: for i in  $(df | grep '^/dev' | awk '{ print $NF }'); do find $i -xdev -type f -perm -4000 -o -type f -perm -2000 2>/dev/null; done
+      changed_when: false
+      check_mode: false
+      register: amazon2cis_4_1_11_priv_procs
+
+    - name: "4.1.11 | PATCH | Ensure use of privileged commands is collected"
+      debug:
+        msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+      changed_when: true
+      notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_11
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.11
+    - auditd
+
+- name: "4.1.12 | PATCH | Ensure successful file system mounts are collected"
+  debug:
+    msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+  changed_when: true
+  notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_12
+  tags:
+    - level2
+    - auditd
+    - patch
+    - automated
+    - rule_4.1.12
+
+- name: "4.1.13 | PATCH | Ensure file deletion events by users are collected"
+  debug:
+    msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+  changed_when: true
+  notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_13
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.13
+    - auditd
+
+- name: "4.1.14 | PATCH | Ensure changes to system administration scope (sudoers) is collected"
+  debug:
+    msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+  changed_when: true
+  notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_14
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.14
+    - auditd
+
+- name: "4.1.15 | PATCH | Ensure system administrator command executions (sudo) are collected"
+  debug:
+    msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+  changed_when: true
+  notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_15
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.15
+    - auditd
+
+- name: "4.1.16 | PATCH | Ensure kernel module loading and unloading is collected"
+  debug:
+    msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+  changed_when: true
+  notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_16
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.16
+    - auditd
+
+- name: "4.1.17 | PATCH | Ensure the audit configuration is immutable"
+  debug:
+    msg: "Control being set via Handler 'update auditd' which writes to /etc/audit.d/99_auditd.rules"
+  changed_when: true
+  notify: update auditd
+  when:
+    - amazon2cis_rule_4_1_17
+  tags:
+    - level2
+    - automated
+    - patch
+    - rule_4.1.17
+    - auditd
