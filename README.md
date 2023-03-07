@@ -110,3 +110,7 @@ packer build -timestamp-ui aws-eks-ami.pkr.hcl
 - scp and macos openssl compatibility issues for local dev
 
 > Add scp flag in ansible extra args in packer builder: https://github.com/hashicorp/packer/issues/11783#issuecomment-1137052770
+
+## Special Thanks
+- Special thanks to Prateek who worked with me on this project
+[Linkedin](https://www.linkedin.com/in/pr0pm/)
